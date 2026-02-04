@@ -119,6 +119,14 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    whatsappStatus: clientStatus
+  });
+});
+
 app.get("/api/groups", async (req, res) => {
   try {
     if (clientStatus !== "ready" || !sock) {
@@ -137,6 +145,29 @@ app.get("/api/groups", async (req, res) => {
   } catch (error) {
     logger.error("Error fetching groups:", error);
     res.status(500).json({ error: "Failed to fetch groups", details: error.message });
+  }
+});
+
+app.get("/api/contacts", async (req, res) => {
+  try {
+    if (clientStatus !== "ready" || !sock) {
+      return res.status(400).json({ error: "WhatsApp client is not ready" });
+    }
+
+    const contacts = await sock.store?.contacts || {};
+    const contactList = Object.values(contacts)
+      .filter(contact => contact.id && !contact.id.includes('@g.us')) // Filter out groups
+      .map(contact => ({
+        id: contact.id,
+        name: contact.name || contact.notify || contact.verifiedName || 'Unknown',
+        number: contact.id.split('@')[0]
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ contacts: contactList });
+  } catch (error) {
+    logger.error("Error fetching contacts:", error);
+    res.status(500).json({ error: "Failed to fetch contacts", details: error.message });
   }
 });
 
@@ -194,6 +225,52 @@ app.post("/api/send-message", upload.array('images'), async (req, res) => {
     res.json({ success: true, message: `Successfully sent ${message ? 'message' : ''} ${files.length > 0 ? 'and ' + files.length + ' image(s)' : ''}` });
   } catch (error) {
     logger.error("Error sending message:", error);
+    res.status(500).json({ error: "Failed to send message", details: error.message });
+  }
+});
+
+// External API endpoint for sending messages (can be called from outside)
+app.post("/api/external/send-message", async (req, res) => {
+  try {
+    const { number, message } = req.body;
+
+    if (!number) {
+      return res.status(400).json({ error: "Number is required" });
+    }
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    if (clientStatus !== "ready" || !sock) {
+      return res.status(400).json({ error: "WhatsApp client is not ready" });
+    }
+
+    // Format phone number
+    let formattedId = number.trim();
+    if (formattedId.startsWith('+')) {
+      formattedId = formattedId.substring(1);
+    }
+    formattedId = formattedId.replace(/[^\d]/g, "");
+    if (!formattedId.endsWith("@s.whatsapp.net")) {
+      formattedId += "@s.whatsapp.net";
+    }
+
+    logger.info(`Sending external message to: ${formattedId}`);
+
+    // Send the message
+    const result = await sock.sendMessage(formattedId, { text: message });
+
+    res.json({
+      success: true,
+      message: "Message sent successfully",
+      messageId: result.key.id,
+      recipient: number,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error("Error sending external message:", error);
     res.status(500).json({ error: "Failed to send message", details: error.message });
   }
 });
@@ -403,7 +480,7 @@ io.on("connection", (socket) => {
   }
 });
 
-const PORT = process.env.PORT || 2178;
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   logger.info(`Server running on http://localhost:${PORT}`);
   connectToWhatsApp();
