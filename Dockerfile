@@ -1,5 +1,5 @@
-# Use Node.js 18 LTS slim image
-FROM node:18-slim
+# Use Node.js 22 LTS slim image
+FROM node:22-slim
 
 # Install system dependencies for WhatsApp Web.js/Baileys
 RUN apt-get update && apt-get install -y \
