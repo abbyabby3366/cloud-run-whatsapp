@@ -71,6 +71,7 @@ Open `http://localhost:8080` to authenticate and test sending messages.
     "message": "Hello from external API!"
   }
   ```
+  Note: `number` can also be a WhatsApp Group JID (e.g., `120363424584075789@g.us`).
 - **Response**:
   ```json
   {

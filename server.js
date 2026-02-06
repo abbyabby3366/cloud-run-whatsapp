@@ -246,14 +246,21 @@ app.post("/api/external/send-message", async (req, res) => {
       return res.status(400).json({ error: "WhatsApp client is not ready" });
     }
 
-    // Format phone number
+    // Format phone number or group JID
     let formattedId = number.trim();
-    if (formattedId.startsWith('+')) {
-      formattedId = formattedId.substring(1);
-    }
-    formattedId = formattedId.replace(/[^\d]/g, "");
-    if (!formattedId.endsWith("@s.whatsapp.net")) {
-      formattedId += "@s.whatsapp.net";
+    
+    // If it's already a group/community ID, leave it as is
+    if (formattedId.endsWith("@g.us") || formattedId.endsWith("@newsletter")) {
+        // Use as is
+    } else {
+        // Treat as a phone number
+        if (formattedId.startsWith('+')) {
+            formattedId = formattedId.substring(1);
+        }
+        formattedId = formattedId.replace(/[^\d]/g, "");
+        if (!formattedId.endsWith("@s.whatsapp.net")) {
+            formattedId += "@s.whatsapp.net";
+        }
     }
 
     logger.info(`Sending external message to: ${formattedId}`);
