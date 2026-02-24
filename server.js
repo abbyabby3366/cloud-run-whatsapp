@@ -4,6 +4,7 @@ if (typeof global.crypto === "undefined") {
   global.crypto = crypto.webcrypto;
 }
 
+import "dotenv/config";
 import express from "express";
 import makeWASocket, {
   DisconnectReason,
@@ -60,11 +61,11 @@ let clientStatus = "disconnected";
 
 // Redis configuration
 const redisOptions = {
-  host: "redis-16787.crce272.asia-seast1-1.gcp.cloud.redislabs.com",
-  port: 16787,
-  password: "8O0wXOsFi8c8Qa5qt8KYYowBYEEocqUi",
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379"),
+  password: process.env.REDIS_PASSWORD || undefined,
 };
-const sessionId = "baileys_session";
+const sessionId = process.env.BAILEYS_AUTH_ID || "baileys_session";
 
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useRedisAuthStateWithHSet(
