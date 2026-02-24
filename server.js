@@ -1,35 +1,39 @@
 // Polyfill for crypto if it's not global (needed for Baileys)
-if (typeof crypto === 'undefined') {
-    global.crypto = require('crypto').webcrypto;
+import crypto from "crypto";
+if (typeof global.crypto === "undefined") {
+  global.crypto = crypto.webcrypto;
 }
 
-const express = require("express");
-const { 
-    default: makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason, 
-    fetchLatestBaileysVersion, 
-    makeCacheableSignalKeyStore,
-    Browsers
-} = require("@whiskeysockets/baileys");
-const qrcode = require("qrcode");
-const http = require("http");
-const socketIo = require("socket.io");
-const cors = require("cors");
-const path = require("path");
-const pino = require("pino");
-const fs = require("fs");
-const qrcodeTerminal = require("qrcode-terminal");
-const multer = require("multer");
+import express from "express";
+import makeWASocket, {
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  Browsers,
+} from "@whiskeysockets/baileys";
+import { useRedisAuthStateWithHSet } from "baileys-redis-auth";
+import qrcode from "qrcode";
+import http from "http";
+import { Server as SocketIoServer } from "socket.io";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+import pino from "pino";
+import fs from "fs";
+import qrcodeTerminal from "qrcode-terminal";
+import multer from "multer";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Multer configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    cb(null, "uploads/");
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
+    cb(null, Date.now() + "-" + file.originalname);
+  },
 });
 const upload = multer({ storage: storage });
 
@@ -38,7 +42,7 @@ const logger = pino({ level: "info" });
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+const io = new SocketIoServer(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
@@ -54,60 +58,75 @@ let sock = null;
 let qrCodeData = null;
 let clientStatus = "disconnected";
 
+// Redis configuration
+const redisOptions = {
+  host: "redis-16787.crce272.asia-seast1-1.gcp.cloud.redislabs.com",
+  port: 16787,
+  password: "8O0wXOsFi8c8Qa5qt8KYYowBYEEocqUi",
+};
+const sessionId = "baileys_session";
+
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info');
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    
-    logger.info(`Using Baileys v${version.join('.')}, isLatest: ${isLatest}`);
+  const { state, saveCreds } = await useRedisAuthStateWithHSet(
+    redisOptions,
+    sessionId,
+  );
+  const { version, isLatest } = await fetchLatestBaileysVersion();
 
-    sock = makeWASocket({
-        version,
-        printQRInTerminal: true,
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, logger),
-        },
-        browser: Browsers.macOS('Desktop'),
-        logger,
-    });
+  logger.info(`Using Baileys v${version.join(".")}, isLatest: ${isLatest}`);
 
-    sock.ev.on('creds.update', saveCreds);
+  sock = makeWASocket({
+    version,
+    printQRInTerminal: true,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, logger),
+    },
+    browser: Browsers.macOS("Desktop"),
+    logger,
+  });
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+  sock.ev.on("creds.update", saveCreds);
 
-        if (qr) {
-            logger.info("QR Code received");
-            // Log QR in terminal
-            qrcodeTerminal.generate(qr, { small: true });
-            
-            clientStatus = "qr_ready";
-            try {
-                qrCodeData = await qrcode.toDataURL(qr);
-                io.emit("qr", { qr: qrCodeData });
-                io.emit("status", { status: clientStatus });
-            } catch (err) {
-                logger.error("Error generating QR code:", err);
-            }
-        }
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            logger.info({ error: lastDisconnect.error, reconnecting: shouldReconnect }, 'Connection closed');
-            clientStatus = "disconnected";
-            io.emit("status", { status: clientStatus });
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            }
-        } else if (connection === 'open') {
-            logger.info('WhatsApp connection opened successfully');
-            clientStatus = "ready";
-            qrCodeData = null;
-            io.emit("status", { status: clientStatus });
-        }
-    });
+    if (qr) {
+      logger.info("QR Code received");
+      // Log QR in terminal
+      qrcodeTerminal.generate(qr, { small: true });
 
-    // We don't need any message handlers as per user request, just "send message" function.
+      clientStatus = "qr_ready";
+      try {
+        qrCodeData = await qrcode.toDataURL(qr);
+        io.emit("qr", { qr: qrCodeData });
+        io.emit("status", { status: clientStatus });
+      } catch (err) {
+        logger.error("Error generating QR code:", err);
+      }
+    }
+
+    if (connection === "close") {
+      const shouldReconnect =
+        lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      logger.info(
+        { error: lastDisconnect.error, reconnecting: shouldReconnect },
+        "Connection closed",
+      );
+      clientStatus = "disconnected";
+      io.emit("status", { status: clientStatus });
+      if (shouldReconnect) {
+        connectToWhatsApp();
+      }
+    } else if (connection === "open") {
+      logger.info("WhatsApp connection opened successfully");
+      clientStatus = "ready";
+      qrCodeData = null;
+      io.emit("status", { status: clientStatus });
+    }
+  });
+
+  // We don't need any message handlers as per user request, just "send message" function.
 }
 
 // API Routes
@@ -123,7 +142,7 @@ app.get("/api/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
     timestamp: new Date().toISOString(),
-    whatsappStatus: clientStatus
+    whatsappStatus: clientStatus,
   });
 });
 
@@ -134,17 +153,19 @@ app.get("/api/groups", async (req, res) => {
     }
 
     const groups = await sock.groupFetchAllParticipating();
-    const groupList = Object.values(groups).map(group => ({
+    const groupList = Object.values(groups).map((group) => ({
       id: group.id,
       subject: group.subject,
       isCommunity: group.isCommunity,
-      isCommunityAnnouncement: group.isCommunityAnnounce
+      isCommunityAnnouncement: group.isCommunityAnnounce,
     }));
 
     res.json({ success: true, groups: groupList });
   } catch (error) {
     logger.error("Error fetching groups:", error);
-    res.status(500).json({ error: "Failed to fetch groups", details: error.message });
+    res
+      .status(500)
+      .json({ error: "Failed to fetch groups", details: error.message });
   }
 });
 
@@ -154,24 +175,27 @@ app.get("/api/contacts", async (req, res) => {
       return res.status(400).json({ error: "WhatsApp client is not ready" });
     }
 
-    const contacts = await sock.store?.contacts || {};
+    const contacts = (await sock.store?.contacts) || {};
     const contactList = Object.values(contacts)
-      .filter(contact => contact.id && !contact.id.includes('@g.us')) // Filter out groups
-      .map(contact => ({
+      .filter((contact) => contact.id && !contact.id.includes("@g.us")) // Filter out groups
+      .map((contact) => ({
         id: contact.id,
-        name: contact.name || contact.notify || contact.verifiedName || 'Unknown',
-        number: contact.id.split('@')[0]
+        name:
+          contact.name || contact.notify || contact.verifiedName || "Unknown",
+        number: contact.id.split("@")[0],
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
     res.json({ contacts: contactList });
   } catch (error) {
     logger.error("Error fetching contacts:", error);
-    res.status(500).json({ error: "Failed to fetch contacts", details: error.message });
+    res
+      .status(500)
+      .json({ error: "Failed to fetch contacts", details: error.message });
   }
 });
 
-app.post("/api/send-message", upload.array('images'), async (req, res) => {
+app.post("/api/send-message", upload.array("images"), async (req, res) => {
   console.log("Incoming POST request to /api/send-message:", req.body);
   try {
     const { number, message } = req.body;
@@ -182,7 +206,7 @@ app.post("/api/send-message", upload.array('images'), async (req, res) => {
     }
 
     if (!message && (!files || files.length === 0)) {
-        return res.status(400).json({ error: "Message or images are required" });
+      return res.status(400).json({ error: "Message or images are required" });
     }
 
     if (clientStatus !== "ready" || !sock) {
@@ -191,41 +215,46 @@ app.post("/api/send-message", upload.array('images'), async (req, res) => {
 
     // Format ID
     let formattedId = number.trim();
-    
+
     // If it's already a group/community ID, leave it as is
     if (formattedId.endsWith("@g.us") || formattedId.endsWith("@newsletter")) {
-        // Use as is
+      // Use as is
     } else {
-        // Treat as a phone number
-        formattedId = formattedId.replace(/[^\d]/g, "");
-        if (!formattedId.endsWith("@s.whatsapp.net")) {
-            formattedId += "@s.whatsapp.net";
-        }
+      // Treat as a phone number
+      formattedId = formattedId.replace(/[^\d]/g, "");
+      if (!formattedId.endsWith("@s.whatsapp.net")) {
+        formattedId += "@s.whatsapp.net";
+      }
     }
 
     logger.info(`Sending message to: ${formattedId}`);
 
     // Send the text message first if it exists
     if (message) {
-        await sock.sendMessage(formattedId, { text: message });
+      await sock.sendMessage(formattedId, { text: message });
     }
 
     // Send each image
     if (files && files.length > 0) {
-        for (const file of files) {
-            await sock.sendMessage(formattedId, { 
-                image: { url: file.path },
-                caption: "" // You can choose to add a caption here if needed
-            });
-            // Delete the file after sending
-            fs.unlinkSync(file.path);
-        }
+      for (const file of files) {
+        await sock.sendMessage(formattedId, {
+          image: { url: file.path },
+          caption: "", // You can choose to add a caption here if needed
+        });
+        // Delete the file after sending
+        fs.unlinkSync(file.path);
+      }
     }
 
-    res.json({ success: true, message: `Successfully sent ${message ? 'message' : ''} ${files.length > 0 ? 'and ' + files.length + ' image(s)' : ''}` });
+    res.json({
+      success: true,
+      message: `Successfully sent ${message ? "message" : ""} ${files.length > 0 ? "and " + files.length + " image(s)" : ""}`,
+    });
   } catch (error) {
     logger.error("Error sending message:", error);
-    res.status(500).json({ error: "Failed to send message", details: error.message });
+    res
+      .status(500)
+      .json({ error: "Failed to send message", details: error.message });
   }
 });
 
@@ -248,19 +277,19 @@ app.post("/api/external/send-message", async (req, res) => {
 
     // Format phone number or group JID
     let formattedId = number.trim();
-    
+
     // If it's already a group/community ID, leave it as is
     if (formattedId.endsWith("@g.us") || formattedId.endsWith("@newsletter")) {
-        // Use as is
+      // Use as is
     } else {
-        // Treat as a phone number
-        if (formattedId.startsWith('+')) {
-            formattedId = formattedId.substring(1);
-        }
-        formattedId = formattedId.replace(/[^\d]/g, "");
-        if (!formattedId.endsWith("@s.whatsapp.net")) {
-            formattedId += "@s.whatsapp.net";
-        }
+      // Treat as a phone number
+      if (formattedId.startsWith("+")) {
+        formattedId = formattedId.substring(1);
+      }
+      formattedId = formattedId.replace(/[^\d]/g, "");
+      if (!formattedId.endsWith("@s.whatsapp.net")) {
+        formattedId += "@s.whatsapp.net";
+      }
     }
 
     logger.info(`Sending external message to: ${formattedId}`);
@@ -273,67 +302,72 @@ app.post("/api/external/send-message", async (req, res) => {
       message: "Message sent successfully",
       messageId: result.key.id,
       recipient: number,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
-
   } catch (error) {
     logger.error("Error sending external message:", error);
-    res.status(500).json({ error: "Failed to send message", details: error.message });
+    res
+      .status(500)
+      .json({ error: "Failed to send message", details: error.message });
   }
 });
 
 app.post("/otp", async (req, res) => {
   try {
-    console.log('OTP webhook received:', req.body);
+    console.log("OTP webhook received:", req.body);
 
     // Extract data from testOTP structure
     const testOTP = req.body;
-    console.log('Received testOTP:', JSON.stringify(testOTP, null, 2));
+    console.log("Received testOTP:", JSON.stringify(testOTP, null, 2));
 
     const phoneNumber = testOTP.to;
     // Extract OTP from the first parameter of the first component (BODY)
-    const otp = testOTP.extendedMessage?.whatsappCloudApiTemplateMessageObject?.components?.[0]?.parameters?.[0]?.text;
-    const sessionId = testOTP.sessionId || 'test-session';
+    const otp =
+      testOTP.extendedMessage?.whatsappCloudApiTemplateMessageObject
+        ?.components?.[0]?.parameters?.[0]?.text;
+    const sessionId = testOTP.sessionId || "test-session";
 
-    console.log('Extracted phoneNumber:', phoneNumber);
-    console.log('Extracted otp:', otp);
+    console.log("Extracted phoneNumber:", phoneNumber);
+    console.log("Extracted otp:", otp);
 
     if (!phoneNumber || !otp) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid testOTP structure - missing to or OTP text',
+        error: "Invalid testOTP structure - missing to or OTP text",
         debug: {
           phoneNumber: phoneNumber,
           otp: otp,
-          receivedBody: testOTP
-        }
+          receivedBody: testOTP,
+        },
       });
     }
 
-    if (clientStatus !== 'ready' || !sock) {
+    if (clientStatus !== "ready" || !sock) {
       return res.status(400).json({
         success: false,
-        error: 'WhatsApp client is not ready'
+        error: "WhatsApp client is not ready",
       });
     }
 
     // Format phone number (remove + if present and add @s.whatsapp.net suffix for Baileys)
-    let formattedNumber = phoneNumber.replace('+', '').replace(/[^\d]/g, "");
+    let formattedNumber = phoneNumber.replace("+", "").replace(/[^\d]/g, "");
     if (!formattedNumber.endsWith("@s.whatsapp.net")) {
-        formattedNumber += "@s.whatsapp.net";
+      formattedNumber += "@s.whatsapp.net";
     }
 
     // Create OTP message with the specified format
     const otpMessage = `*${otp}* is your verification code. For your security, do not share this code.`;
 
     // Send OTP message
-    const result = await sock.sendMessage(formattedNumber, { text: otpMessage });
+    const result = await sock.sendMessage(formattedNumber, {
+      text: otpMessage,
+    });
 
-    console.log('OTP message sent successfully:', {
+    console.log("OTP message sent successfully:", {
       sessionId,
       phoneNumber,
       otp,
-      messageId: result.key.id
+      messageId: result.key.id,
     });
 
     res.json({
@@ -342,28 +376,27 @@ app.post("/otp", async (req, res) => {
       sessionId: sessionId,
       otp: otp,
       phoneNumber: phoneNumber,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
-
   } catch (error) {
-    console.error('Error in OTP webhook:', error);
+    console.error("Error in OTP webhook:", error);
     res.status(500).json({
       success: false,
-      error: 'Failed to send OTP message',
-      details: error.message
+      error: "Failed to send OTP message",
+      details: error.message,
     });
   }
 });
 
-app.post('/initiate', async (req, res) => {
+app.post("/initiate", async (req, res) => {
   try {
-    console.log('Initiate webhook received:', req.body);
+    console.log("Initiate webhook received:", req.body);
 
     // Extract data from testData structure
     const testData = req.body;
     const phoneNumber = testData.phone_number;
-    const sessionId = testData.sessionId || 'test-session';
-    const messageType = testData.messageType || 'text';
+    const sessionId = testData.sessionId || "test-session";
+    const messageType = testData.messageType || "text";
     const mediaUrl = testData.message; // From the snippet, 'message' field is used for media URLs
 
     // Reservation details
@@ -375,84 +408,91 @@ app.post('/initiate', async (req, res) => {
     const reservationDate = testData.reservation_date;
     const reservationTime = testData.reservation_time;
     const numberOfGuests = testData.number_of_guests;
-    const remarks = testData.remarks || 'No special requests';
+    const remarks = testData.remarks || "No special requests";
 
     if (!phoneNumber) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number is required'
+        error: "Phone number is required",
       });
     }
 
-    if (clientStatus !== 'ready' || !sock) {
+    if (clientStatus !== "ready" || !sock) {
       return res.status(400).json({
         success: false,
-        error: 'WhatsApp client is not ready'
+        error: "WhatsApp client is not ready",
       });
     }
 
     // Format phone number (remove + if present and add @s.whatsapp.net suffix for Baileys)
-    let formattedNumber = phoneNumber.replace('+', '').replace(/[^\d]/g, "");
+    let formattedNumber = phoneNumber.replace("+", "").replace(/[^\d]/g, "");
     if (!formattedNumber.endsWith("@s.whatsapp.net")) {
-        formattedNumber += "@s.whatsapp.net";
+      formattedNumber += "@s.whatsapp.net";
     }
 
     // Create reservation confirmation message using the template
-    const reservationMessage = `*Hi, ${fullName || 'Guest'} (ID: ${bpId || 'N/A'})*
+    const reservationMessage = `*Hi, ${fullName || "Guest"} (ID: ${bpId || "N/A"})*
 
 Thank you for choosing Jio8 😎
 
 To confirm the details of your reservation, please review the information below:
 
-• Booking ID: ${bookingId || 'N/A'}
-• Merchant: ${merchantName || 'N/A'}
-• Commission Rate: ${commissionRate || 'N/A'}
-• Reservation Date: ${reservationDate || 'N/A'}
-• Reservation Time: ${reservationTime || 'N/A'}
-• Number of Guests: ${numberOfGuests || 'N/A'}
+• Booking ID: ${bookingId || "N/A"}
+• Merchant: ${merchantName || "N/A"}
+• Commission Rate: ${commissionRate || "N/A"}
+• Reservation Date: ${reservationDate || "N/A"}
+• Reservation Time: ${reservationTime || "N/A"}
+• Number of Guests: ${numberOfGuests || "N/A"}
 • Remarks: ${remarks}
 
 If the information above is correct, please reply "*Yes*" to proceed.
 
 Jio8 Customer Support`;
 
-    console.log(`[Initiate] Preparing to send ${messageType} message to ${formattedNumber}`);
+    console.log(
+      `[Initiate] Preparing to send ${messageType} message to ${formattedNumber}`,
+    );
     console.log(`[Initiate] Message Content:\n${reservationMessage}`);
 
     let result;
 
     // Handle different message types using Baileys logic
     switch (messageType.toLowerCase()) {
-      case 'text':
-        result = await sock.sendMessage(formattedNumber, { text: reservationMessage });
-        break;
-      case 'image':
-        if (!mediaUrl) throw new Error("Image URL is required for image type");
-        result = await sock.sendMessage(formattedNumber, { 
-            image: { url: mediaUrl }, 
-            caption: reservationMessage 
+      case "text":
+        result = await sock.sendMessage(formattedNumber, {
+          text: reservationMessage,
         });
         break;
-      case 'document':
-        if (!mediaUrl) throw new Error("Document URL is required for document type");
-        result = await sock.sendMessage(formattedNumber, { 
-            document: { url: mediaUrl }, 
-            mimetype: 'application/pdf', // Defaulting to PDF
-            fileName: 'Reservation_Details.pdf',
-            caption: reservationMessage 
+      case "image":
+        if (!mediaUrl) throw new Error("Image URL is required for image type");
+        result = await sock.sendMessage(formattedNumber, {
+          image: { url: mediaUrl },
+          caption: reservationMessage,
+        });
+        break;
+      case "document":
+        if (!mediaUrl)
+          throw new Error("Document URL is required for document type");
+        result = await sock.sendMessage(formattedNumber, {
+          document: { url: mediaUrl },
+          mimetype: "application/pdf", // Defaulting to PDF
+          fileName: "Reservation_Details.pdf",
+          caption: reservationMessage,
         });
         break;
       default:
-        result = await sock.sendMessage(formattedNumber, { text: reservationMessage });
+        result = await sock.sendMessage(formattedNumber, {
+          text: reservationMessage,
+        });
     }
 
-    console.log('Initiate message sent successfully:', {
+    console.log("Initiate message sent successfully:", {
       sessionId,
       phoneNumber,
       messageType,
       fullName,
       bookingId,
-      messageId: result.key.id
+      messageId: result.key.id,
     });
 
     res.json({
@@ -461,15 +501,14 @@ Jio8 Customer Support`;
       sessionId: sessionId || null,
       messageType,
       bookingId: bookingId || null,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
-
   } catch (error) {
-    console.error('Error in Initiate webhook:', error);
+    console.error("Error in Initiate webhook:", error);
     res.status(500).json({
       success: false,
-      error: 'Failed to send initiate message',
-      details: error.message
+      error: "Failed to send initiate message",
+      details: error.message,
     });
   }
 });
