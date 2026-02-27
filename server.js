@@ -23,6 +23,7 @@ import pino from "pino";
 import fs from "fs";
 import qrcodeTerminal from "qrcode-terminal";
 import multer from "multer";
+import { handleIncomingMessages } from "./jomrewards_handler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,6 +89,10 @@ async function connectToWhatsApp() {
   });
 
   sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("messages.upsert", async (m) => {
+    await handleIncomingMessages(sock, m);
+  });
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -530,5 +535,6 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   logger.info(`Server running on http://localhost:${PORT}`);
+  console.log("Server running on http://localhost:8080");
   connectToWhatsApp();
 });
