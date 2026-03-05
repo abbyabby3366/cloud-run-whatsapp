@@ -23,7 +23,7 @@ import pino from "pino";
 import fs from "fs";
 import qrcodeTerminal from "qrcode-terminal";
 import multer from "multer";
-import { handleIncomingMessages } from "./jomrewards_handler.js";
+import { handleIncomingMessages } from "./jomrewards_api_send_message.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,6 +59,7 @@ app.use(express.static(path.join(__dirname, "public")));
 let sock = null;
 let qrCodeData = null;
 let clientStatus = "disconnected";
+let connectedNumber = null;
 
 // Redis configuration
 const redisOptions = {
@@ -128,7 +129,9 @@ async function connectToWhatsApp() {
       logger.info("WhatsApp connection opened successfully");
       clientStatus = "ready";
       qrCodeData = null;
-      io.emit("status", { status: clientStatus });
+      connectedNumber = sock.user.id.split(":")[0];
+      await sock.sendPresenceUpdate("unavailable");
+      io.emit("status", { status: clientStatus, connectedNumber, sessionId });
     }
   });
 
@@ -140,6 +143,8 @@ app.get("/api/status", (req, res) => {
   res.json({
     status: clientStatus,
     qrCodeAvailable: !!qrCodeData,
+    connectedNumber: connectedNumber,
+    sessionId: sessionId,
     timestamp: new Date().toISOString(),
   });
 });
@@ -530,7 +535,7 @@ app.get("/", (req, res) => {
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
-  socket.emit("status", { status: clientStatus });
+  socket.emit("status", { status: clientStatus, connectedNumber, sessionId });
   if (qrCodeData) {
     socket.emit("qr", { qr: qrCodeData });
   }
