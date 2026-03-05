@@ -144,6 +144,10 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+app.get("/ping", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
