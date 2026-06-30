@@ -61,6 +61,7 @@ let sock = null;
 let qrCodeData = null;
 let clientStatus = "disconnected";
 let connectedNumber = null;
+let authRedisClient = null;
 
 // Redis configuration
 const redisOptions = {
@@ -71,10 +72,27 @@ const redisOptions = {
 const sessionId = process.env.BAILEYS_AUTH_ID || "baileys_session";
 
 async function connectToWhatsApp() {
-  const { state, saveCreds } = await useRedisAuthStateWithHSet(
+  // Close previous Redis connection to prevent connection leak
+  if (authRedisClient) {
+    try {
+      await authRedisClient.quit();
+      logger.info("Previous auth Redis client closed");
+    } catch (err) {
+      logger.warn({ err }, "Error closing previous auth Redis client");
+    }
+    authRedisClient = null;
+  }
+
+  const { state, saveCreds, redis } = await useRedisAuthStateWithHSet(
     redisOptions,
     sessionId,
   );
+  authRedisClient = redis;
+
+  // Add error listener to prevent uncaught exception crashes from Redis connection issues
+  redis.on("error", (err) => {
+    logger.error({ err }, "Auth Redis client error");
+  });
   const { version, isLatest } = await fetchLatestBaileysVersion();
 
   logger.info(`Using Baileys v${version.join(".")}, isLatest: ${isLatest}`);
@@ -154,6 +172,17 @@ app.post("/api/delete-session", async (req, res) => {
       sock = null;
     }
 
+    // Close the Baileys auth Redis client to free the connection
+    if (authRedisClient) {
+      try {
+        await authRedisClient.quit();
+        logger.info("Auth Redis client closed before session delete");
+      } catch (e) {
+        logger.warn("Error closing auth Redis client:", e.message);
+      }
+      authRedisClient = null;
+    }
+
     clientStatus = "disconnected";
     connectedNumber = null;
     qrCodeData = null;
@@ -164,6 +193,11 @@ app.post("/api/delete-session", async (req, res) => {
       host: redisOptions.host,
       port: redisOptions.port,
       password: redisOptions.password,
+    });
+
+    // Add error listener to prevent uncaught exception crashes
+    redis.on("error", (err) => {
+      logger.error({ err }, "Delete session Redis client error");
     });
 
     // Delete the main hash key used by baileys-redis-auth
@@ -606,6 +640,19 @@ io.on("connection", (socket) => {
   socket.emit("status", { status: clientStatus, connectedNumber, sessionId });
   if (qrCodeData) {
     socket.emit("qr", { qr: qrCodeData });
+  }
+});
+
+// Global error handlers to prevent unhandled Redis errors from crashing the process
+process.on("unhandledRejection", (reason, promise) => {
+  logger.error({ reason }, "Unhandled Promise Rejection");
+});
+
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught Exception");
+  // Only exit on truly fatal errors, not Redis client limits
+  if (err.message && !err.message.includes("max number of clients reached")) {
+    process.exit(1);
   }
 });
 
