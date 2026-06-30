@@ -17,8 +17,8 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.11.0",
+    "baileys": "^7.0.0-rc13",
     "baileys-redis-auth": "^2.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",

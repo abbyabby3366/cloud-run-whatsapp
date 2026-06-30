@@ -12,7 +12,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   Browsers,
-} from "@whiskeysockets/baileys";
+} from "baileys";
 import { useRedisAuthStateWithHSet } from "baileys-redis-auth";
 import qrcode from "qrcode";
 import http from "http";
@@ -62,6 +62,8 @@ let qrCodeData = null;
 let clientStatus = "disconnected";
 let connectedNumber = null;
 let authRedisClient = null;
+let isDeletingSession = false;
+let isConnecting = false;
 
 // Redis configuration
 const redisOptions = {
@@ -72,87 +74,104 @@ const redisOptions = {
 const sessionId = process.env.BAILEYS_AUTH_ID || "baileys_session";
 
 async function connectToWhatsApp() {
-  // Close previous Redis connection to prevent connection leak
-  if (authRedisClient) {
-    try {
-      await authRedisClient.quit();
-      logger.info("Previous auth Redis client closed");
-    } catch (err) {
-      logger.warn({ err }, "Error closing previous auth Redis client");
-    }
-    authRedisClient = null;
+  if (isConnecting) {
+    logger.warn("Already attempting to connect to WhatsApp, ignoring request");
+    return;
   }
+  isConnecting = true;
 
-  const { state, saveCreds, redis } = await useRedisAuthStateWithHSet(
-    redisOptions,
-    sessionId,
-  );
-  authRedisClient = redis;
-
-  // Add error listener to prevent uncaught exception crashes from Redis connection issues
-  redis.on("error", (err) => {
-    logger.error({ err }, "Auth Redis client error");
-  });
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-
-  logger.info(`Using Baileys v${version.join(".")}, isLatest: ${isLatest}`);
-
-  sock = makeWASocket({
-    version,
-    printQRInTerminal: true,
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger),
-    },
-    browser: Browsers.macOS("Desktop"),
-    logger,
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("messages.upsert", async (m) => {
-    await handleIncomingMessages(sock, m);
-  });
-
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      logger.info("QR Code received");
-      // Log QR in terminal
-      qrcodeTerminal.generate(qr, { small: true });
-
-      clientStatus = "qr_ready";
+  try {
+    // Close previous Redis connection to prevent connection leak
+    if (authRedisClient) {
       try {
-        qrCodeData = await qrcode.toDataURL(qr);
-        io.emit("qr", { qr: qrCodeData });
-        io.emit("status", { status: clientStatus });
+        await authRedisClient.quit();
+        logger.info("Previous auth Redis client closed");
       } catch (err) {
-        logger.error("Error generating QR code:", err);
+        logger.warn({ err }, "Error closing previous auth Redis client");
       }
+      authRedisClient = null;
     }
 
-    if (connection === "close") {
-      const shouldReconnect =
-        lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      logger.info(
-        { error: lastDisconnect.error, reconnecting: shouldReconnect },
-        "Connection closed",
-      );
-      clientStatus = "disconnected";
-      io.emit("status", { status: clientStatus });
-      if (shouldReconnect) {
-        connectToWhatsApp();
+    const { state, saveCreds, redis } = await useRedisAuthStateWithHSet(
+      redisOptions,
+      sessionId,
+    );
+    authRedisClient = redis;
+
+    // Add error listener to prevent uncaught exception crashes from Redis connection issues
+    redis.on("error", (err) => {
+      logger.error({ err }, "Auth Redis client error");
+    });
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+
+    logger.info(`Using Baileys v${version.join(".")}, isLatest: ${isLatest}`);
+
+    sock = makeWASocket({
+      version,
+      printQRInTerminal: true,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
+      browser: Browsers.macOS("Chrome"),
+      logger,
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("messages.upsert", async (m) => {
+      await handleIncomingMessages(sock, m);
+    });
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        logger.info("QR Code received");
+        // Log QR in terminal
+        qrcodeTerminal.generate(qr, { small: true });
+
+        clientStatus = "qr_ready";
+        try {
+          qrCodeData = await qrcode.toDataURL(qr);
+          io.emit("qr", { qr: qrCodeData });
+          io.emit("status", { status: clientStatus });
+        } catch (err) {
+          logger.error("Error generating QR code:", err);
+        }
       }
-    } else if (connection === "open") {
-      logger.info("WhatsApp connection opened successfully");
-      clientStatus = "ready";
-      qrCodeData = null;
-      connectedNumber = sock.user.id.split(":")[0];
-      await sock.sendPresenceUpdate("unavailable");
-      io.emit("status", { status: clientStatus, connectedNumber, sessionId });
-    }
-  });
+
+      if (connection === "close") {
+        isConnecting = false;
+        const shouldReconnect =
+          lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut && !isDeletingSession;
+        logger.info(
+          { error: lastDisconnect.error, reconnecting: shouldReconnect },
+          "Connection closed",
+        );
+        clientStatus = "disconnected";
+        io.emit("status", { status: clientStatus });
+        if (shouldReconnect) {
+          connectToWhatsApp();
+        }
+      } else if (connection === "open") {
+        isConnecting = false;
+        logger.info("WhatsApp connection opened successfully");
+        clientStatus = "ready";
+        qrCodeData = null;
+        connectedNumber = sock.user.id.split(":")[0];
+        await sock.sendPresenceUpdate("unavailable");
+        io.emit("status", { status: clientStatus, connectedNumber, sessionId });
+      }
+    });
+  } catch (err) {
+    logger.error({ err }, "Failed to initialize WhatsApp connection");
+    isConnecting = false;
+    // Retry connection after 5 seconds if initialization failed
+    setTimeout(() => {
+      connectToWhatsApp();
+    }, 5000);
+  }
 
   // We don't need any message handlers as per user request, just "send message" function.
 }
@@ -161,6 +180,7 @@ async function connectToWhatsApp() {
 app.post("/api/delete-session", async (req, res) => {
   try {
     logger.info(`Deleting session: ${sessionId}`);
+    isDeletingSession = true;
 
     // Close existing socket connection if any
     if (sock) {
@@ -222,6 +242,7 @@ app.post("/api/delete-session", async (req, res) => {
 
     // Reconnect with fresh session
     setTimeout(() => {
+      isDeletingSession = false;
       connectToWhatsApp();
     }, 1000);
 
