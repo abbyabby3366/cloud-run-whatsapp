@@ -1,5 +1,6 @@
 // Polyfill for crypto if it's not global (needed for Baileys)
 import crypto from "crypto";
+import Redis from "ioredis";
 if (typeof global.crypto === "undefined") {
   global.crypto = crypto.webcrypto;
 }
@@ -137,6 +138,73 @@ async function connectToWhatsApp() {
 
   // We don't need any message handlers as per user request, just "send message" function.
 }
+
+// Delete session and reconnect
+app.post("/api/delete-session", async (req, res) => {
+  try {
+    logger.info(`Deleting session: ${sessionId}`);
+
+    // Close existing socket connection if any
+    if (sock) {
+      try {
+        sock.end(undefined);
+      } catch (e) {
+        logger.warn("Error closing socket:", e.message);
+      }
+      sock = null;
+    }
+
+    clientStatus = "disconnected";
+    connectedNumber = null;
+    qrCodeData = null;
+    io.emit("status", { status: clientStatus, sessionId });
+
+    // Connect to Redis and delete all keys for this session
+    const redis = new Redis({
+      host: redisOptions.host,
+      port: redisOptions.port,
+      password: redisOptions.password,
+    });
+
+    // Delete the main hash key used by baileys-redis-auth
+    const deleted = await redis.del(sessionId);
+    logger.info(`Deleted Redis key '${sessionId}': ${deleted}`);
+
+    // Also scan for any related keys (pattern: sessionId:*)
+    let cursor = "0";
+    let totalDeleted = deleted;
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", `${sessionId}:*`, "COUNT", 100);
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        const delCount = await redis.del(...keys);
+        totalDeleted += delCount;
+        logger.info(`Deleted ${delCount} related keys`);
+      }
+    } while (cursor !== "0");
+
+    await redis.quit();
+    logger.info(`Total Redis keys deleted: ${totalDeleted}`);
+
+    // Reconnect with fresh session
+    setTimeout(() => {
+      connectToWhatsApp();
+    }, 1000);
+
+    res.json({
+      success: true,
+      message: "Session deleted. Reconnecting with fresh QR code...",
+      deletedKeys: totalDeleted,
+    });
+  } catch (error) {
+    logger.error("Error deleting session:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to delete session",
+      details: error.message,
+    });
+  }
+});
 
 // API Routes
 app.get("/api/status", (req, res) => {

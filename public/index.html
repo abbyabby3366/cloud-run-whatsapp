@@ -155,6 +155,15 @@
       transform: none;
     }
 
+    .btn-danger {
+      background: #dc3545;
+      margin-top: 15px;
+    }
+
+    .btn-danger:hover {
+      background: #a71d2a;
+    }
+
     .contacts-section {
       margin-top: 30px;
       text-align: left;
@@ -241,7 +250,7 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>📱 WhatsApp Bot v1.3</h1>
+      <h1>WhatsApp Bot v1.3</h1>
       <p>Connect and send messages via WhatsApp Web.js</p>
       <div id="apiEndpoint" style="background: rgba(37, 211, 102, 0.1); border: 1px solid #25D366; border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 0.9rem; color: #25D366;">
         <strong>External API Endpoint:</strong> <code class="dynamic-url-container" style="background: rgba(37, 211, 102, 0.2); padding: 2px 4px; border-radius: 4px;"><span class="dynamic-url">Loading...</span>/api/external/send-message</code>
@@ -261,6 +270,7 @@
         Connected as: <span id="connectedNumberText"></span>
       </div>
       <div id="statusDetails"></div>
+      <button class="btn btn-danger hidden" id="deleteSessionBtn">🗑️ Delete Session & Reconnect</button>
     </div>
 
     <div id="qrContainer" class="qr-container hidden">
@@ -525,6 +535,7 @@ print(result)</code></pre>
     const connectedNumberContainer = document.getElementById('connectedNumberContainer');
     const connectedNumberText = document.getElementById('connectedNumberText');
     const authIdText = document.getElementById('authIdText');
+    const deleteSessionBtn = document.getElementById('deleteSessionBtn');
 
     // Socket event listeners
     socket.on('status', (data) => {
@@ -570,6 +581,10 @@ print(result)</code></pre>
       messageForm.classList.toggle('hidden', status !== 'ready');
       contactsSection.classList.toggle('hidden', status !== 'ready');
       groupsSection.classList.toggle('hidden', status !== 'ready');
+
+      // Show/hide delete session button
+      const showDeleteBtn = (status === 'disconnected' || status === 'auth_failed');
+      deleteSessionBtn.classList.toggle('hidden', !showDeleteBtn);
 
       // Update connected number display
       if (status === 'ready' && connectedNumber) {
@@ -805,6 +820,32 @@ print(result)</code></pre>
         console.error('Failed to copy: ', err);
       });
     }
+
+    // Delete session handler
+    deleteSessionBtn.addEventListener('click', async () => {
+      if (!confirm('Are you sure you want to delete the session? You will need to scan a new QR code.')) {
+        return;
+      }
+
+      deleteSessionBtn.disabled = true;
+      deleteSessionBtn.textContent = '⏳ Deleting session...';
+
+      try {
+        const response = await fetch('/api/delete-session', { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+          showAlert(result.message, 'success');
+        } else {
+          showAlert(result.error || 'Failed to delete session', 'error');
+        }
+      } catch (error) {
+        showAlert('Error deleting session', 'error');
+      } finally {
+        deleteSessionBtn.disabled = false;
+        deleteSessionBtn.textContent = '🗑️ Delete Session & Reconnect';
+      }
+    });
 
     // Update endpoint on page load
     updateApiEndpoint();
